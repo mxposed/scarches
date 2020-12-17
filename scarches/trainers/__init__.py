@@ -6,6 +6,7 @@ from .scvi import (
 
 from .trvae import (
     trVAETrainer,
+    tranVAETrainer
 )
 
 
@@ -14,4 +15,5 @@ __all__ = [
     "scANVITrainer",
     "totalTrainer",
     "trVAETrainer",
+    "tranVAETrainer",
 ]

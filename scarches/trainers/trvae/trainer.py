@@ -42,6 +42,9 @@ class Trainer:
             integer is reached.
        use_early_stopping: Boolean
             If 'True' the EarlyStopping class is being used for training to prevent overfitting.
+       reload_best: Boolean
+            If 'True' the best state of the model during training concerning the early stopping criterion is reloaded
+            at the end of training.
        early_stopping_kwargs: Dict
             Passes custom Earlystopping parameters.
        use_stratified_sampling: Boolean
@@ -88,6 +91,7 @@ class Trainer:
         early_stopping_kwargs = (early_stopping_kwargs if early_stopping_kwargs else dict())
 
         self.use_early_stopping = kwargs.pop("use_early_stopping", True)
+        self.reload_best = kwargs.pop("reload_best", True)
         self.use_stratified_sampling = kwargs.pop("use_stratified_sampling", True)
         self.use_stratified_split = kwargs.pop("use_stratified_split", False)
         self.monitor = kwargs.pop("monitor", True)
@@ -154,11 +158,11 @@ class Trainer:
         self.optimizer = torch.optim.Adam(params, lr=lr, eps=eps, weight_decay=self.weight_decay)
         # Initialize Train/Val Data, Sampler, Dataloader
         self.initialize_loaders()
+        self.before_loop()
 
         for self.epoch in range(n_epochs):
             self.iter_logs = defaultdict(list)
             for self.iter, batch_data in enumerate(self.dataloader_train):
-                # Safe data to right device
                 for key1 in batch_data:
                     for key2, batch in batch_data[key1].items():
                         batch_data[key1][key2] = batch.to(self.device)
@@ -172,7 +176,7 @@ class Trainer:
                 if not self.check_early_stop():
                     break
 
-        if self.best_state_dict is not None:
+        if self.best_state_dict is not None and self.reload_best:
             print("Saving best state of network...")
             print("Best State was in Epoch", self.best_epoch)
             self.model.load_state_dict(self.best_state_dict)
@@ -199,7 +203,7 @@ class Trainer:
             condition_key=self.condition_key,
             cell_type_key=self.cell_type_key,
             condition_encoder=self.model.condition_encoder,
-            cell_type_encoder=None,
+            cell_type_encoder=self.model.cell_type_encoder,
             use_normalized=use_normalized,
         )
 
@@ -235,6 +239,9 @@ class Trainer:
                                                                 shuffle=True,
                                                                 collate_fn=custom_collate,
                                                                 num_workers=self.n_workers)
+
+    def before_loop(self):
+        pass
 
     def on_iteration(self, batch_data):
         # Dont update any weight on first layers except condition weights

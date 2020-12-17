@@ -26,7 +26,7 @@ def print_progress(epoch, logs, n_epochs=10000):
     message = ""
     for key in logs:
         if "loss" in key and ("epoch_" in key or "val_" in key) and "unweighted" not in key:
-            message += f" - {key:s}: {logs[key][-1]:7.0f}"
+            message += f" - {key:s}: {logs[key][-1]:7.2f}"
 
     _print_progress_bar(epoch + 1, n_epochs, prefix='', suffix=message, decimals=1, length=20)
 
@@ -181,18 +181,6 @@ def custom_collate(batch):
             return torch.as_tensor(batch)
 
     elif isinstance(elem, container_abcs.Mapping):
-        if "celltype" in elem:
-            output = dict(total_batch=dict(),
-                          labelled_batch=dict())
-            for key in elem:
-                total_data = [d[key] for d in batch]
-                labelled_data = list()
-                for d in batch:
-                    if d["celltype"] != -1:
-                        labelled_data.append(d[key])
-                output["total_batch"][key] = custom_collate(total_data)
-                output["labelled_batch"][key] = custom_collate(labelled_data)
-        else:
-            output = dict(total_batch=dict())
-            output["total_batch"] = {key: custom_collate([d[key] for d in batch]) for key in elem}
+        output = dict(total_batch=dict())
+        output["total_batch"] = {key: custom_collate([d[key] for d in batch]) for key in elem}
         return output

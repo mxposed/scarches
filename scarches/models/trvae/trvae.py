@@ -69,6 +69,7 @@ class trVAE(nn.Module):
         self.n_conditions = len(conditions)
         self.conditions = conditions
         self.condition_encoder = {k: v for k, v in zip(conditions, range(len(conditions)))}
+        self.cell_type_encoder = None
         self.recon_loss = recon_loss
         self.mmd_boundary = mmd_boundary
         self.use_mmd = use_mmd
