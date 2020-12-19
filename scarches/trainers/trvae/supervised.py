@@ -66,7 +66,10 @@ class tranVAETrainer(Trainer):
         self.tau = tau
 
     def before_loop(self):
-        self.landmarks = self.initialize_landmarks()
+        self.landmarks = self.initialize_labelled_landmarks()
+        l, a = self.init_landmark_loss(self.landmarks)
+        print("LOSS:", l)
+        print("ACCURACY:", a)
 
     def loss(self, total_batch=None):
         latent, recon_loss, kl_loss, mmd_loss = self.model(**total_batch)
@@ -98,7 +101,7 @@ class tranVAETrainer(Trainer):
             )
             latents += [latent]
         latent = torch.cat(latents)
-        self.landmarks = self.update_meta_train_landmarks(
+        self.landmarks = self.update_labelled_landmarks(
             latent,
             self.train_data.cell_types,
             self.landmarks,
@@ -106,8 +109,9 @@ class tranVAETrainer(Trainer):
         )
         super().on_epoch_end()
 
-    def initialize_landmarks(self):
+    def initialize_labelled_landmarks(self):
         latents = []
+        labels = []
         indices = torch.arange(self.train_data.data.size(0), device=self.device)
         subsampled_indices = indices.split(self.batch_size)
         for batch in subsampled_indices:
@@ -116,8 +120,12 @@ class tranVAETrainer(Trainer):
                     self.train_data.data[batch, :].to(self.device),
                     self.train_data.conditions[batch].to(self.device)
                 )
+                label = self.train_data.cell_types[batch].to(self.device)
             latents += [latent]
+            labels += [label]
         latent = torch.cat(latents)
+        label = torch.cat(labels)
+        '''
         k_means = KMeans(n_clusters=self.model.n_cell_types, random_state=0).fit(latent.cpu())
 
         landmarks = torch.zeros(
@@ -127,15 +135,23 @@ class tranVAETrainer(Trainer):
         )
         with torch.no_grad():
             landmarks.copy_(torch.tensor(k_means.cluster_centers_, device=self.device))
+        '''
+        landmarks = self.update_labelled_landmarks(latent, label, None, self.tau)
         return landmarks
 
-    def update_meta_train_landmarks(self, latent, labels, previous_landmarks, tau):
+    def update_labelled_landmarks(self, latent, labels, previous_landmarks, tau):
         with torch.no_grad():
             unique_labels = torch.unique(labels, sorted=True)
+            landmarks_mean = None
+            for value in unique_labels:
+                indices = labels.eq(value).nonzero()
+                landmark = latent[indices].mean(0)
+                landmarks_mean = torch.cat([landmarks_mean, landmark]) if landmarks_mean is not None else landmark
+            '''
             class_indices = list(map(lambda y: labels.eq(y).nonzero(), unique_labels))
 
             landmarks_mean = torch.stack([latent[class_index].mean(0) for class_index in class_indices]).squeeze()
-
+            '''
             if previous_landmarks is None or tau == 0:
                 return landmarks_mean
 
@@ -181,15 +197,34 @@ class tranVAETrainer(Trainer):
 
         return loss, accuracy
 
-    def landmark_class_loss(self, latent, landmarks, labels):
-        unique_labels = torch.unique(labels, sorted=True)
-        for idx, value in enumerate(unique_labels):
-            labels[labels == value] = idx
-
+    def init_landmark_loss(self, landmarks):
+        latents = []
+        labels = []
+        indices = torch.arange(self.train_data.data.size(0), device=self.device)
+        subsampled_indices = indices.split(self.batch_size)
+        for batch in subsampled_indices:
+            with torch.no_grad():
+                latent = self.model.get_latent(
+                    self.train_data.data[batch, :].to(self.device),
+                    self.train_data.conditions[batch].to(self.device)
+                )
+                label = self.train_data.cell_types[batch].to(self.device)
+            latents += [latent]
+            labels += [label]
+        latent = torch.cat(latents)
+        label = torch.cat(labels)
+        n_samples = latent.shape[0]
+        unique_labels = torch.unique(label, sorted=True)
         distances = self.euclidean_dist(latent, landmarks)
-        loss = F.cross_entropy(distances, labels)
+        loss = None
+        for value in unique_labels:
+            indices = label.eq(value).nonzero()
+            label_loss = distances[indices, value].sum(0)
+            loss = torch.cat([loss, label_loss]) if loss is not None else label_loss
+        loss = loss.sum() / n_samples
 
         _, y_pred = torch.max(-distances, dim=1)
-        accuracy = y_pred.eq(labels.squeeze()).float().mean()
+
+        accuracy = y_pred.eq(label.squeeze()).float().mean()
 
         return loss, accuracy
