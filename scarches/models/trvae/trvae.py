@@ -173,7 +173,7 @@ class trVAE(nn.Module):
         output = self.decoder(latent, c)
         return output[-1]
 
-    def forward(self, x=None, batch=None, sizefactor=None):
+    def forward(self, x=None, batch=None, sizefactor=None, labeled=None):
         x_log = torch.log(1 + x)
         z1_mean, z1_log_var = self.encoder(x_log, batch)
         z1 = self.sampling(z1_mean, z1_log_var)

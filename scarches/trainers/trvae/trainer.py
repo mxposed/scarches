@@ -126,74 +126,9 @@ class Trainer:
         self.val_iters_per_epoch = None
 
         self.logs = defaultdict(list)
-
-    def calc_alpha_coeff(self):
-        """Calculates current alpha coefficient for alpha annealing.
-
-           Parameters
-           ----------
-
-           Returns
-           -------
-           Current annealed alpha value
-        """
-        if self.alpha_epoch_anneal is not None:
-            alpha_coeff = min(self.epoch / self.alpha_epoch_anneal, 1)
-        elif self.alpha_iter_anneal is not None:
-            alpha_coeff = min(((self.epoch * self.iters_per_epoch + self.iter) / self.alpha_iter_anneal), 1)
-        else:
-            alpha_coeff = 1
-        return alpha_coeff
-
-    def train(self,
-              n_epochs=400,
-              lr=1e-3,
-              eps=0.01):
-        begin = time.time()
-        self.model.train()
-        self.n_epochs = n_epochs
-
-        params = filter(lambda p: p.requires_grad, self.model.parameters())
-
-        self.optimizer = torch.optim.Adam(params, lr=lr, eps=eps, weight_decay=self.weight_decay)
-        # Initialize Train/Val Data, Sampler, Dataloader
-        self.initialize_loaders()
-        self.before_loop()
-
-        for self.epoch in range(n_epochs):
-            self.iter_logs = defaultdict(list)
-            for self.iter, batch_data in enumerate(self.dataloader_train):
-                for key1 in batch_data:
-                    for key2, batch in batch_data[key1].items():
-                        batch_data[key1][key2] = batch.to(self.device)
-
-                # Loss Calculation
-                self.on_iteration(batch_data)
-
-            # Validation of Model, Monitoring, Early Stopping
-            self.on_epoch_end()
-            if self.use_early_stopping:
-                if not self.check_early_stop():
-                    break
-
-        if self.best_state_dict is not None and self.reload_best:
-            print("Saving best state of network...")
-            print("Best State was in Epoch", self.best_epoch)
-            self.model.load_state_dict(self.best_state_dict)
-
-        self.model.eval()
-
-        self.training_time += (time.time() - begin)
-
-    def initialize_loaders(self):
-        """
-        Initializes Train-/Test Data and Dataloaders with custom_collate and WeightedRandomSampler for Trainloader.
-        Returns:
-
-        """
-        use_normalized = False
+        self.use_normalized = False
         if self.model.recon_loss == 'mse':
-            use_normalized = True
+            self.use_normalized = True
 
         # Create Train/Valid AnnotatetDataset objects
         self.train_data, self.valid_data = make_dataset(
@@ -204,9 +139,15 @@ class Trainer:
             cell_type_key=self.cell_type_key,
             condition_encoder=self.model.condition_encoder,
             cell_type_encoder=self.model.cell_type_encoder,
-            use_normalized=use_normalized,
+            use_normalized=self.use_normalized,
         )
 
+    def initialize_loaders(self):
+        """
+        Initializes Train-/Test Dataloaders with custom_collate and WeightedRandomSampler for Trainloader.
+        Returns:
+
+        """
         if self.n_samples is None or self.n_samples > len(self.train_data):
             self.n_samples = len(self.train_data)
         self.iters_per_epoch = int(np.ceil(self.n_samples / self.batch_size))
@@ -240,7 +181,65 @@ class Trainer:
                                                                 collate_fn=custom_collate,
                                                                 num_workers=self.n_workers)
 
-    def before_loop(self):
+    def calc_alpha_coeff(self):
+        """Calculates current alpha coefficient for alpha annealing.
+
+           Parameters
+           ----------
+
+           Returns
+           -------
+           Current annealed alpha value
+        """
+        if self.alpha_epoch_anneal is not None:
+            alpha_coeff = min(self.epoch / self.alpha_epoch_anneal, 1)
+        elif self.alpha_iter_anneal is not None:
+            alpha_coeff = min(((self.epoch * self.iters_per_epoch + self.iter) / self.alpha_iter_anneal), 1)
+        else:
+            alpha_coeff = 1
+        return alpha_coeff
+
+    def train(self,
+              n_epochs=400,
+              lr=1e-3,
+              eps=0.01):
+
+        self.initialize_loaders()
+        begin = time.time()
+        self.model.train()
+        self.n_epochs = n_epochs
+
+        params = filter(lambda p: p.requires_grad, self.model.parameters())
+
+        self.optimizer = torch.optim.Adam(params, lr=lr, eps=eps, weight_decay=self.weight_decay)
+
+        self.before_loop(lr, eps)
+
+        for self.epoch in range(n_epochs):
+            self.iter_logs = defaultdict(list)
+            for self.iter, batch_data in enumerate(self.dataloader_train):
+                for key, batch in batch_data.items():
+                    batch_data[key] = batch.to(self.device)
+
+                # Loss Calculation
+                self.on_iteration(batch_data)
+
+            # Validation of Model, Monitoring, Early Stopping
+            self.on_epoch_end()
+            if self.use_early_stopping:
+                if not self.check_early_stop():
+                    break
+
+        if self.best_state_dict is not None and self.reload_best:
+            print("Saving best state of network...")
+            print("Best State was in Epoch", self.best_epoch)
+            self.model.load_state_dict(self.best_state_dict)
+
+        self.model.eval()
+
+        self.training_time += (time.time() - begin)
+
+    def before_loop(self, lr, eps):
         pass
 
     def on_iteration(self, batch_data):
@@ -284,11 +283,10 @@ class Trainer:
         self.iter_logs = defaultdict(list)
         # Calculate Validation Losses
         for val_iter, batch_data in enumerate(self.dataloader_valid):
-            for key1 in batch_data:
-                for key2, batch in batch_data[key1].items():
-                    batch_data[key1][key2] = batch.to(self.device)
+            for key, batch in batch_data.items():
+                batch_data[key] = batch.to(self.device)
 
-            val_loss = self.loss(**batch_data)
+            val_loss = self.loss(batch_data)
 
         # Get Validation Logs
         for key in self.iter_logs:

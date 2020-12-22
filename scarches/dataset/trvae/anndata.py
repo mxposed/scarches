@@ -34,10 +34,8 @@ class AnnotatedDataset(Dataset):
                  condition_encoder=None,
                  cell_type_key=None,
                  cell_type_encoder=None,
-                 use_normalized=False,
                  ):
 
-        self.use_normalized = use_normalized
         self.condition_key = condition_key
         self.condition_encoder = condition_encoder
         self.cell_type_key = cell_type_key
@@ -47,17 +45,8 @@ class AnnotatedDataset(Dataset):
             adata = remove_sparsity(adata)
         self.data = torch.tensor(adata.X)
 
-        if self.use_normalized:
-            sc.pp.normalize_total(adata,
-                                  exclude_highly_expressed=True,
-                                  target_sum=1e4,
-                                  key_added='trvae_size_factors')
-        else:
-            size_factors = np.log(adata.X.sum(1))
-            if len(size_factors.shape) < 2:
-                size_factors = np.expand_dims(size_factors, axis=1)
-            adata.obs['trvae_size_factors'] = size_factors
         self.size_factors = torch.tensor(adata.obs['trvae_size_factors'])
+        self.labeled_vector = torch.tensor(adata.obs['trvae_labeled'])
 
         # Create Condition Encoder
         if self.condition_key is not None:
@@ -77,9 +66,8 @@ class AnnotatedDataset(Dataset):
         outputs = dict()
 
         outputs["x"] = self.data[index, :]
-
-        if not self.use_normalized:
-            outputs["sizefactor"] = self.size_factors[index]
+        outputs["labeled"] = self.labeled_vector[index]
+        outputs["sizefactor"] = self.size_factors[index]
 
         if self.condition_key:
             outputs["batch"] = self.conditions[index]

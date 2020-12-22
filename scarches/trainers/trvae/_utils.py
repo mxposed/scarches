@@ -4,6 +4,7 @@ import re
 import torch
 from torch._six import container_abcs
 from torch.utils.data import DataLoader, SubsetRandomSampler
+import scanpy as sc
 
 from scarches.dataset.trvae import AnnotatedDataset
 
@@ -114,7 +115,8 @@ def make_dataset(adata,
                  cell_type_key=None,
                  condition_encoder=None,
                  cell_type_encoder=None,
-                 use_normalized=False
+                 use_normalized=False,
+                 labeled_indices=None,
                  ):
     """Splits 'adata' into train and validation data and converts them into 'CustomDatasetFromAdata' objects.
 
@@ -125,17 +127,40 @@ def make_dataset(adata,
        -------
        Training 'CustomDatasetFromAdata' object, Validation 'CustomDatasetFromAdata' object
     """
-    if use_stratified_split:
-        train_adata, validation_adata = train_test_split(adata, train_frac, condition_key=condition_key)
+    if use_normalized:
+        sc.pp.normalize_total(adata,
+                              exclude_highly_expressed=True,
+                              target_sum=1e4,
+                              key_added='trvae_size_factors')
     else:
-        train_adata, validation_adata = train_test_split(adata, train_frac)
+        size_factors = np.log(adata.X.sum(1))
+        if len(size_factors.shape) < 2:
+            size_factors = np.expand_dims(size_factors, axis=1)
+        adata.obs['trvae_size_factors'] = size_factors
+
+    # Preprare data for semisupervised learning
+    labeled_array = np.zeros((len(adata), 1))
+    if labeled_indices is not None:
+        labeled_array[labeled_indices] = 1
+    adata.obs['trvae_labeled'] = labeled_array
+
+    if use_stratified_split:
+        train_adata, validation_adata = train_test_split(
+            adata,
+            train_frac,
+            condition_key=condition_key,
+        )
+    else:
+        train_adata, validation_adata = train_test_split(
+            adata,
+            train_frac,
+        )
 
     data_set_train = AnnotatedDataset(train_adata,
                                       condition_key=condition_key,
                                       cell_type_key=cell_type_key,
                                       condition_encoder=condition_encoder,
                                       cell_type_encoder=cell_type_encoder,
-                                      use_normalized=use_normalized,
                                       )
     if train_frac == 1:
         return data_set_train, None
@@ -145,7 +170,6 @@ def make_dataset(adata,
                                           cell_type_key=cell_type_key,
                                           condition_encoder=condition_encoder,
                                           cell_type_encoder=cell_type_encoder,
-                                          use_normalized=use_normalized,
                                           )
         return data_set_train, data_set_valid
 
@@ -181,6 +205,5 @@ def custom_collate(batch):
             return torch.as_tensor(batch)
 
     elif isinstance(elem, container_abcs.Mapping):
-        output = dict(total_batch=dict())
-        output["total_batch"] = {key: custom_collate([d[key] for d in batch]) for key in elem}
+        output = {key: custom_collate([d[key] for d in batch]) for key in elem}
         return output

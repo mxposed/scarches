@@ -6,6 +6,7 @@ from .trvae import trVAE
 from .losses import mse, mmd, zinb, nb
 from ._utils import one_hot_encoder
 
+
 class tranVAE(trVAE):
     def __init__(self,
                  input_dim: int,
@@ -21,7 +22,7 @@ class tranVAE(trVAE):
         self.cell_types = cell_types
         self.cell_type_encoder = {k: v for k, v in zip(cell_types, range(len(cell_types)))}
 
-    def forward(self, x=None, batch=None, sizefactor=None, celltype=None):
+    def forward(self, x=None, batch=None, sizefactor=None, celltype=None, labeled=None):
         x_log = torch.log(1 + x)
         z1_mean, z1_log_var = self.encoder(x_log, batch)
         z1 = self.sampling(z1_mean, z1_log_var)
