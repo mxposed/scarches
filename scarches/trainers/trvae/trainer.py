@@ -236,10 +236,14 @@ class Trainer:
             self.model.load_state_dict(self.best_state_dict)
 
         self.model.eval()
+        self.after_loop()
 
         self.training_time += (time.time() - begin)
 
     def before_loop(self, lr, eps):
+        pass
+
+    def after_loop(self):
         pass
 
     def on_iteration(self, batch_data):
@@ -252,7 +256,7 @@ class Trainer:
                         module.track_running_stats = False
 
         # Calculate Loss depending on Trainer/Model
-        self.current_loss = loss = self.loss(**batch_data)
+        self.current_loss = loss = self.loss(batch_data)
         self.optimizer.zero_grad()
         loss.backward()
 

@@ -1,7 +1,7 @@
 import torch
 from sklearn.cluster import KMeans
 from .trainer import Trainer
-from ._utils import make_dataset
+from ._utils import make_dataset, euclidean_dist
 
 
 class tranVAETrainer(Trainer):
@@ -91,30 +91,51 @@ class tranVAETrainer(Trainer):
 
     def before_loop(self, lr, eps):
         self.initialize_landmarks()
-        self.lndmk_optim = torch.optim.Adam(
-            params=self.landmarks_unlabeled,
-            lr=lr,
-            eps=eps,
-            weight_decay=self.weight_decay
-        )
+        if 0 in self.train_data.labeled_vector.unique().tolist():
+            self.lndmk_optim = torch.optim.Adam(
+                params=self.landmarks_unlabeled,
+                lr=lr,
+                eps=eps,
+                weight_decay=self.weight_decay
+            )
 
     def loss(self, total_batch=None):
         latent, recon_loss, kl_loss, mmd_loss = self.model(**total_batch)
         trvae_loss = recon_loss + self.calc_alpha_coeff()*kl_loss + mmd_loss
-        landmark_loss, landmark_accuracy = self.landmark_loss(
-            latent,
-            self.landmarks,
-            total_batch["celltype"]
-        )
+
+        # Calculate classifier loss for labeled/unlabeled data
+        label_categories = total_batch["labeled"].unique().tolist()
+        landmark_loss = None
+        unlabeled_loss = torch.tensor(0, device=self.device, requires_grad=False)
+        labeled_loss = torch.tensor(0, device=self.device, requires_grad=False)
+        if 0 in label_categories:
+            unlabeled_loss, _ = self.landmark_unlabeled_loss(
+                latent[total_batch['labeled'] == 0],
+                torch.stack(self.landmarks_unlabeled).squeeze(),
+                self.tau,
+            )
+            landmark_loss = unlabeled_loss
+        if 1 in label_categories:
+            labeled_loss, labeled_accuracy = self.landmark_labeled_loss(
+                latent[total_batch['labeled'] == 1],
+                self.landmarks_labeled,
+                total_batch["celltype"][total_batch['labeled'] == 1],
+            )
+            landmark_loss = labeled_loss if landmark_loss is None else landmark_loss + labeled_loss
         classifier_loss = self.eta * landmark_loss
+
         loss = trvae_loss + classifier_loss
         self.iter_logs["loss"].append(loss)
         self.iter_logs["unweighted_loss"].append(recon_loss + kl_loss + mmd_loss + landmark_loss)
         self.iter_logs["trvae_loss"].append(trvae_loss)
         self.iter_logs["classifier_loss"].append(classifier_loss)
+        self.iter_logs["unlabeled_loss"].append(unlabeled_loss)
+        self.iter_logs["labeled_loss"].append(labeled_loss)
         return loss
 
     def on_epoch_end(self):
+        self.model.eval()
+        # Update landmark positions
         latents = []
         indices = torch.arange(self.train_data.data.size(0), device=self.device)
         subsampled_indices = indices.split(self.batch_size)
@@ -125,13 +146,36 @@ class tranVAETrainer(Trainer):
             )
             latents += [latent]
         latent = torch.cat(latents)
-        self.landmarks = self.update_labeled_landmarks(
-            latent,
-            self.train_data.cell_types,
-            self.landmarks,
-            self.tau,
-        )
+        label_categories = self.train_data.labeled_vector.unique().tolist()
+        if 0 in label_categories:
+            for landmk in self.landmarks_unlabeled:
+                landmk.requires_grad = True
+            self.lndmk_optim.zero_grad()
+            update_loss, args_count = self.landmark_unlabeled_loss(
+                latent[self.train_data.labeled_vector == 0],
+                torch.stack(self.landmarks_unlabeled).squeeze(),
+                self.tau,
+            )
+            update_loss.backward()
+            self.lndmk_optim.step()
+            for landmk in self.landmarks_unlabeled:
+                landmk.requires_grad = False
+
+        if 1 in label_categories:
+            self.landmarks_labeled = self.update_labeled_landmarks(
+                latent[self.train_data.labeled_vector == 1],
+                self.train_data.cell_types[self.train_data.labeled_vector == 1],
+                self.landmarks_labeled,
+                self.tau,
+            )
+        self.model.train()
+
         super().on_epoch_end()
+
+    def after_loop(self):
+        self.model.landmarks_labeled = self.landmarks_labeled
+        if 0 in self.train_data.labeled_vector.unique().tolist():
+            self.model.landmarks_unlabeled = torch.stack(self.landmarks_unlabeled).squeeze()
 
     def initialize_landmarks(self):
         # Compute Latent of whole train data
@@ -148,7 +192,7 @@ class tranVAETrainer(Trainer):
         latent = torch.cat(latents)
 
         # Init labeled Landmarks if labeled data existent
-        if 1 in self.train_data.labeled_vector.unique.tolist():
+        if 1 in self.train_data.labeled_vector.unique().tolist():
             self.landmarks_labeled = self.update_labeled_landmarks(
                 latent[self.train_data.labeled_vector == 1],
                 self.train_data.cell_types[self.train_data.labeled_vector == 1],
@@ -157,17 +201,24 @@ class tranVAETrainer(Trainer):
             )
 
         # Init unlabeled Landmarks if unlabeled data existent
-        if 0 in self.train_data.labeled_vector.unique.tolist():
+        if 0 in self.train_data.labeled_vector.unique().tolist():
             self.landmarks_unlabeled = torch.zeros(
                 size=(self.n_clusters, self.model.latent_dim),
                 device=self.device,
                 requires_grad=True,
             )
+            self.landmarks_unlabeled = [
+                torch.zeros(
+                    size=(1, self.model.latent_dim),
+                    requires_grad=True,
+                    device=self.device)
+                for _ in range(self.n_clusters)
+            ]
             k_means = KMeans(n_clusters=self.n_clusters,
                              random_state=0).fit(latent[self.train_data.labeled_vector == 0].cpu())
             k_means_lndmk = torch.tensor(k_means.cluster_centers_, device=self.device)
             with torch.no_grad():
-                self.landmarks_unlabeled.copy_(k_means_lndmk)
+                [self.landmarks_unlabeled[i].copy_(k_means_lndmk[i, :]) for i in range(k_means_lndmk.shape[0])]
 
     def update_labeled_landmarks(self, latent, labels, previous_landmarks, tau):
         with torch.no_grad():
@@ -193,27 +244,10 @@ class tranVAETrainer(Trainer):
 
         return landmarks
 
-    def euclidean_dist(self, x, y):
-        """
-        Compute euclidean distance between two tensors
-        """
-        # x: N x D
-        # y: M x D
-        n = x.size(0)
-        m = y.size(0)
-        d = x.size(1)
-        if d != y.size(1):
-            raise Exception
-
-        x = x.unsqueeze(1).expand(n, m, d)
-        y = y.unsqueeze(0).expand(n, m, d)
-
-        return torch.pow(x - y, 2).sum(2)
-
-    def landmark_loss(self, latent, landmarks, labels):
+    def landmark_labeled_loss(self, latent, landmarks, labels):
         n_samples = latent.shape[0]
         unique_labels = torch.unique(labels, sorted=True)
-        distances = self.euclidean_dist(latent, landmarks)
+        distances = euclidean_dist(latent, landmarks)
         loss = None
         for value in unique_labels:
             indices = labels.eq(value).nonzero()
@@ -226,3 +260,28 @@ class tranVAETrainer(Trainer):
         accuracy = y_pred.eq(labels.squeeze()).float().mean()
 
         return loss, accuracy
+
+    def unlabeled_loss_basic(self, latent, landmarks):
+        dists = euclidean_dist(latent, landmarks)
+        min_dist = torch.min(dists, 1)
+
+        y_hat = min_dist[1]
+        args_uniq = torch.unique(y_hat, sorted=True)
+        args_count = torch.stack([(y_hat == x_u).sum() for x_u in args_uniq])
+
+        min_dist = min_dist[0]  # get_distances
+
+        loss_val = torch.stack([min_dist[y_hat == idx_class].mean(0) for idx_class in args_uniq]).mean()
+
+        return loss_val, args_count
+
+    def landmark_unlabeled_loss(self, latent, landmarks, tau):
+        loss_val_test, args_count = self.unlabeled_loss_basic(latent, landmarks)
+        if tau > 0:
+            dists = euclidean_dist(landmarks, landmarks)
+            nproto = landmarks.shape[0]
+            loss_val2 = - torch.sum(dists) / (nproto * nproto - nproto)
+
+            loss_val_test += tau * loss_val2
+
+        return loss_val_test, args_count

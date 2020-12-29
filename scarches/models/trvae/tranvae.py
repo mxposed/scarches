@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from .trvae import trVAE
 from .losses import mse, mmd, zinb, nb
-from ._utils import one_hot_encoder
+from ._utils import one_hot_encoder,euclidean_dist
 
 
 class tranVAE(trVAE):
@@ -21,6 +21,14 @@ class tranVAE(trVAE):
         self.n_cell_types = len(cell_types)
         self.cell_types = cell_types
         self.cell_type_encoder = {k: v for k, v in zip(cell_types, range(len(cell_types)))}
+        self.landmarks_labeled = None
+        self.landmarks_unlabeled = None
+
+    def classify(self, x, c=None):
+        latent = self.get_latent(x,c)
+        distances = euclidean_dist(latent, self.landmarks_labeled)
+        _, y_pred = torch.max(-distances, dim=1)
+        return y_pred
 
     def forward(self, x=None, batch=None, sizefactor=None, celltype=None, labeled=None):
         x_log = torch.log(1 + x)
