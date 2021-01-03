@@ -1,6 +1,8 @@
 import torch
 from torch.distributions import Normal, kl_divergence
 import torch.nn.functional as F
+from typing import Optional
+import numpy as np
 
 from .trvae import trVAE
 from .losses import mse, mmd, zinb, nb
@@ -12,6 +14,8 @@ class tranVAE(trVAE):
                  input_dim: int,
                  conditions: list,
                  cell_types: list,
+                 landmarks_labeled: Optional[np.ndarray] = None,
+                 landmarks_unlabeled: Optional[np.ndarray] = None,
                  **trvae_kwargs,
                  ):
         super().__init__(
@@ -21,8 +25,8 @@ class tranVAE(trVAE):
         self.n_cell_types = len(cell_types)
         self.cell_types = cell_types
         self.cell_type_encoder = {k: v for k, v in zip(cell_types, range(len(cell_types)))}
-        self.landmarks_labeled = None
-        self.landmarks_unlabeled = None
+        self.landmarks_labeled = landmarks_labeled
+        self.landmarks_unlabeled = landmarks_unlabeled
 
     def classify(self, x, c=None):
         latent = self.get_latent(x,c)

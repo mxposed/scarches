@@ -4,13 +4,13 @@ import numpy as np
 from anndata import AnnData
 from typing import Optional, Union
 
-from .trvae import trVAE
-from scarches.trainers.trvae.unsupervised import trVAETrainer
+from .tranvae import tranVAE
+from scarches.trainers.trvae.supervised import tranVAETrainer
 from ._utils import _validate_var_names
 from .base_model import BaseMixin
 
 
-class TRVAE(BaseMixin):
+class TRANVAE(BaseMixin):
     """Model for scArches class. This class contains the implementation of Conditional Variational Auto-encoder.
 
        Parameters
@@ -49,6 +49,12 @@ class TRVAE(BaseMixin):
         adata: AnnData,
         condition_key: str = None,
         conditions: Optional[list] = None,
+        cell_type_key: str = None,
+        cell_types: Optional[list] = None,
+        labeled_indices: Optional[list] = None,
+        n_clusters: Optional[int] = None,
+        landmarks_labeled: Optional[np.ndarray] = None,
+        landmarks_unlabeled: Optional[np.ndarray] = None,
         hidden_layer_sizes: list = [256, 64],
         latent_dim: int = 10,
         dr_rate: float = 0.05,
@@ -63,6 +69,7 @@ class TRVAE(BaseMixin):
         self.adata = adata
 
         self.condition_key_ = condition_key
+        self.cell_type_key_ = cell_type_key
 
         if conditions is None:
             if condition_key is not None:
@@ -71,6 +78,19 @@ class TRVAE(BaseMixin):
                 self.conditions_ = []
         else:
             self.conditions_ = conditions
+
+        if cell_types is None:
+            if cell_type_key is not None:
+                self.cell_types_ = adata.obs[cell_type_key].unique().tolist()
+            else:
+                self.cell_types_ = []
+        else:
+            self.cell_types_ = cell_types
+
+        if labeled_indices is None:
+            self.labeled_indices_ = range(len(adata))
+        else:
+            self.labeled_indices_ = labeled_indices
 
         self.hidden_layer_sizes_ = hidden_layer_sizes
         self.latent_dim_ = latent_dim
@@ -84,21 +104,28 @@ class TRVAE(BaseMixin):
         self.use_ln_ = use_ln
 
         self.input_dim_ = adata.n_vars
+        self.landmarks_labeled_ = landmarks_labeled
+        self.landmarks_unlabeled_ = landmarks_unlabeled
 
-        self.model = trVAE(
-            self.input_dim_,
-            self.conditions_,
-            self.hidden_layer_sizes_,
-            self.latent_dim_,
-            self.dr_rate_,
-            self.use_mmd_,
-            self.mmd_on_,
-            self.mmd_boundary_,
-            self.recon_loss_,
-            self.beta_,
-            self.use_bn_,
-            self.use_ln_,
+        self.model = tranVAE(
+            input_dim=self.input_dim_,
+            conditions=self.conditions_,
+            cell_types=self.cell_types_,
+            landmarks_labeled=self.landmarks_labeled_,
+            landmarks_unlabeled=self.landmarks_unlabeled_,
+            hidden_layer_sizes=self.hidden_layer_sizes_,
+            latent_dim=self.latent_dim_,
+            dr_rate=self.dr_rate_,
+            use_mmd=self.use_mmd_,
+            mmd_on=self.mmd_on_,
+            mmd_boundary=self.mmd_boundary_,
+            recon_loss=self.recon_loss_,
+            beta=self.beta_,
+            use_bn=self.use_bn_,
+            use_ln=self.use_ln_,
         )
+
+        self.n_clusters_ = self.model.n_cell_types if n_clusters is None else n_clusters
 
         self.is_trained_ = False
 
@@ -122,15 +149,22 @@ class TRVAE(BaseMixin):
            eps
                 torch.optim.Adam eps parameter
            kwargs
-                kwargs for the TrVAE trainer.
+                kwargs for the TranVAE trainer.
         """
-        self.trainer = trVAETrainer(
+        self.trainer = tranVAETrainer(
             self.model,
             self.adata,
+            n_clusters=self.n_clusters_,
+            labeled_indices=self.labeled_indices_,
             condition_key=self.condition_key_,
+            cell_type_key=self.cell_type_key_,
             **kwargs)
         self.trainer.train(n_epochs, lr, eps)
         self.is_trained_ = True
+        self.landmarks_labeled_ = \
+            self.model.landmarks_labeled.cpu().numpy() if self.model.landmarks_labeled is not None else None
+        self.landmarks_unlabeled_ = \
+            self.model.landmarks_unlabeled.cpu().numpy() if self.model.landmarks_unlabeled is not None else None
 
     def get_latent(
         self,
@@ -181,11 +215,56 @@ class TRVAE(BaseMixin):
 
         return np.array(torch.cat(latents))
 
+    def classify(
+            self,
+            x: Optional[np.ndarray] = None,
+            c: Optional[np.ndarray] = None,
+    ):
+        device = next(self.model.parameters()).device
+
+        if x is None:
+            x = self.adata.X
+            if self.conditions_ is not None:
+                c = self.adata.obs[self.condition_key_]
+
+        if c is not None:
+            c = np.asarray(c)
+            if not set(c).issubset(self.conditions_):
+                raise ValueError("Incorrect conditions")
+            labels = np.zeros(c.shape[0])
+            for condition, label in self.model.condition_encoder.items():
+                labels[c == condition] = label
+            c = torch.tensor(labels, device=device)
+
+        x = torch.tensor(x, device=device)
+
+        preds = []
+        indices = torch.arange(x.size(0), device=device)
+        subsampled_indices = indices.split(512)
+        for batch in subsampled_indices:
+            pred = self.model.classify(x[batch, :], c[batch])
+            preds += [pred.cpu().detach()]
+
+        full_pred = np.array(torch.cat(preds))
+        inv_ct_encoder = {v: k for k, v in self.model.cell_type_encoder.items()}
+        full_pred_names = []
+
+        for pred in full_pred:
+            full_pred_names.append(inv_ct_encoder[pred])
+
+        return np.array(full_pred_names)
+
     @classmethod
     def _get_init_params_from_dict(cls, dct):
         init_params = {
             'condition_key': dct['condition_key_'],
             'conditions': dct['conditions_'],
+            'cell_type_key': dct['cell_type_key_'],
+            'cell_types': dct['cell_types_'],
+            'labeled_indices': dct['labeled_indices_'],
+            'n_clusters': dct['n_clusters_'],
+            'landmarks_labeled': dct['landmarks_labeled_'],
+            'landmarks_unlabeled': dct['landmarks_unlabeled_'],
             'hidden_layer_sizes': dct['hidden_layer_sizes_'],
             'latent_dim': dct['latent_dim_'],
             'dr_rate': dct['dr_rate_'],
@@ -214,8 +293,10 @@ class TRVAE(BaseMixin):
         cls,
         adata: AnnData,
         reference_model: Union[str, 'TRVAE'],
+        labeled_indices: Optional[list] = None,
         freeze: bool = True,
         freeze_expression: bool = True,
+        freeze_classifier: bool = True,
         remove_dropout: bool = True,
     ):
         """Transfer Learning function for new data. Uses old trained model and expands it for new conditions.
@@ -260,8 +341,24 @@ class TRVAE(BaseMixin):
         for condition in new_conditions:
             conditions.append(condition)
 
+        cell_types = init_params['cell_types']
+        cell_type_key = init_params['cell_type_key']
+        new_cell_types = []
+        adata_cell_types = adata.obs[cell_type_key].unique().tolist()
+        # Check if new conditions are already known
+        for item in adata_cell_types:
+            if item not in cell_types:
+                new_cell_types.append(item)
+
+        # Add new conditions to overall conditions
+        for cell_type in new_cell_types:
+            cell_types.append(cell_type)
+
         if remove_dropout:
             init_params['dr_rate'] = 0.0
+
+        init_params['n_clusters'] = len(cell_types)
+        init_params['labeled_indices'] = labeled_indices
 
         new_model = cls(adata, **init_params)
         new_model._load_expand_params_from_dict(model_state_dict)
