@@ -294,6 +294,7 @@ class TRANVAE(BaseMixin):
         adata: AnnData,
         reference_model: Union[str, 'TRVAE'],
         labeled_indices: Optional[list] = None,
+        n_clusters: Optional[int] = None,
         freeze: bool = True,
         freeze_expression: bool = True,
         freeze_classifier: bool = True,
@@ -357,7 +358,7 @@ class TRANVAE(BaseMixin):
         if remove_dropout:
             init_params['dr_rate'] = 0.0
 
-        init_params['n_clusters'] = len(cell_types)
+        init_params['n_clusters'] = n_clusters
         init_params['labeled_indices'] = labeled_indices
 
         new_model = cls(adata, **init_params)

@@ -63,8 +63,15 @@ class tranVAETrainer(Trainer):
             **kwargs
     ):
         super().__init__(model, adata, **kwargs)
-        self.landmarks_labeled = None
-        self.landmarks_unlabeled = None
+
+        self.landmarks_labeled = self.model.landmarks_labeled
+        if self.landmarks_labeled is not None:
+            self.landmarks_labeled = torch.tensor(self.landmarks_labeled, device=self.device)
+
+        self.landmarks_unlabeled = self.model.landmarks_unlabeled
+        if self.landmarks_unlabeled is not None:
+            self.landmarks_unlabeled = torch.tensor(self.landmarks_unlabeled, device=self.device)
+
         self.eta = eta
         self.tau = tau
         if labeled_indices is None:
@@ -167,6 +174,7 @@ class tranVAETrainer(Trainer):
                 self.train_data.cell_types[self.train_data.labeled_vector == 1],
                 self.landmarks_labeled,
                 self.tau,
+                self.model.new_landmarks
             )
         self.model.train()
 
@@ -193,20 +201,26 @@ class tranVAETrainer(Trainer):
 
         # Init labeled Landmarks if labeled data existent
         if 1 in self.train_data.labeled_vector.unique().tolist():
-            self.landmarks_labeled = self.update_labeled_landmarks(
-                latent[self.train_data.labeled_vector == 1],
-                self.train_data.cell_types[self.train_data.labeled_vector == 1],
-                None,
-                self.tau
-            )
+            labeled_latent = latent[self.train_data.labeled_vector == 1]
+            labeled_cell_types = self.train_data.cell_types[self.train_data.labeled_vector == 1]
+            if self.landmarks_labeled is not None:
+                with torch.no_grad():
+                    if len(self.model.new_landmarks) > 0:
+                        for value in self.model.new_landmarks:
+                            indices = labeled_cell_types.eq(value).nonzero()
+                            landmark = labeled_latent[indices].mean(0)
+                            self.landmarks_labeled = torch.cat(
+                                [self.landmarks_labeled, landmark]) if self.landmarks_labeled is not None else landmark
+            else:
+                self.landmarks_labeled = self.update_labeled_landmarks(
+                    latent[self.train_data.labeled_vector == 1],
+                    self.train_data.cell_types[self.train_data.labeled_vector == 1],
+                    None,
+                    self.tau
+                )
 
         # Init unlabeled Landmarks if unlabeled data existent
         if 0 in self.train_data.labeled_vector.unique().tolist():
-            self.landmarks_unlabeled = torch.zeros(
-                size=(self.n_clusters, self.model.latent_dim),
-                device=self.device,
-                requires_grad=True,
-            )
             self.landmarks_unlabeled = [
                 torch.zeros(
                     size=(1, self.model.latent_dim),
@@ -220,19 +234,19 @@ class tranVAETrainer(Trainer):
             with torch.no_grad():
                 [self.landmarks_unlabeled[i].copy_(k_means_lndmk[i, :]) for i in range(k_means_lndmk.shape[0])]
 
-    def update_labeled_landmarks(self, latent, labels, previous_landmarks, tau):
+    def update_labeled_landmarks(self, latent, labels, previous_landmarks, tau, mask=None):
         with torch.no_grad():
             unique_labels = torch.unique(labels, sorted=True)
             landmarks_mean = None
             for value in unique_labels:
-                indices = labels.eq(value).nonzero()
-                landmark = latent[indices].mean(0)
-                landmarks_mean = torch.cat([landmarks_mean, landmark]) if landmarks_mean is not None else landmark
-            '''
-            class_indices = list(map(lambda y: labels.eq(y).nonzero(), unique_labels))
+                if mask is None or value in mask:
+                    indices = labels.eq(value).nonzero()
+                    landmark = latent[indices].mean(0)
+                    landmarks_mean = torch.cat([landmarks_mean, landmark]) if landmarks_mean is not None else landmark
+                else:
+                    landmark = previous_landmarks[value].unsqueeze(0)
+                    landmarks_mean = torch.cat([landmarks_mean, landmark]) if landmarks_mean is not None else landmark
 
-            landmarks_mean = torch.stack([latent[class_index].mean(0) for class_index in class_indices]).squeeze()
-            '''
             if previous_landmarks is None or tau == 0:
                 return landmarks_mean
 
@@ -285,3 +299,4 @@ class tranVAETrainer(Trainer):
             loss_val_test += tau * loss_val2
 
         return loss_val_test, args_count
+

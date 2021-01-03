@@ -27,6 +27,11 @@ class tranVAE(trVAE):
         self.cell_type_encoder = {k: v for k, v in zip(cell_types, range(len(cell_types)))}
         self.landmarks_labeled = landmarks_labeled
         self.landmarks_unlabeled = landmarks_unlabeled
+        self.new_landmarks = None
+        if landmarks_labeled is not None:
+            self.new_landmarks = []
+            for idx in range(self.n_cell_types - landmarks_labeled.shape[0]):
+                self.new_landmarks.append(landmarks_labeled.shape[0] + idx)
 
     def classify(self, x, c=None):
         latent = self.get_latent(x,c)
