@@ -80,6 +80,7 @@ class tranVAETrainer(Trainer):
             self.labeled_indices = labeled_indices
         self.update_labeled_indices(self.labeled_indices)
         self.n_clusters = self.model.n_cell_types if n_clusters is None else n_clusters
+        self.n_labeled = self.model.n_cell_types
         self.lndmk_optim = None
 
     def update_labeled_indices(self, labeled_indices):
@@ -184,6 +185,8 @@ class tranVAETrainer(Trainer):
         self.model.landmarks_labeled = self.landmarks_labeled
         if 0 in self.train_data.labeled_vector.unique().tolist():
             self.model.landmarks_unlabeled = torch.stack(self.landmarks_unlabeled).squeeze()
+        else:
+            self.model.landmarks_unlabeled = self.landmarks_unlabeled
 
     def initialize_landmarks(self):
         # Compute Latent of whole train data
@@ -238,8 +241,8 @@ class tranVAETrainer(Trainer):
         with torch.no_grad():
             unique_labels = torch.unique(labels, sorted=True)
             landmarks_mean = None
-            for value in unique_labels:
-                if mask is None or value in mask:
+            for value in range(self.n_labeled):
+                if (mask is None or value in mask) and value in unique_labels:
                     indices = labels.eq(value).nonzero()
                     landmark = latent[indices].mean(0)
                     landmarks_mean = torch.cat([landmarks_mean, landmark]) if landmarks_mean is not None else landmark
